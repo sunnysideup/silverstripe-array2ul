@@ -29,7 +29,7 @@ class ExpandableArrayListField extends LiteralField
         string $name,
         string $title = null,
         array $value = [],
-        int $collapseAfter = 5,
+        int $collapseAfter = 25,
         bool $startExpanded = false,
         string $emptyLabel = '(empty)'
     ) {

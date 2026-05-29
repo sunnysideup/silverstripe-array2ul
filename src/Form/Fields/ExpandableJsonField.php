@@ -27,7 +27,7 @@ class ExpandableJsonField extends ExpandableArrayListField
         string $name,
         string $title = null,
         string $value = '{}',
-        int $collapseAfter = 5,
+        int $collapseAfter = 25,
         bool $startExpanded = false,
         string $emptyLabel = '(empty)'
     ) {

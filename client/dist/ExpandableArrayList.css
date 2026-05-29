@@ -1,0 +1,88 @@
+/* =========================================================================
+   Optional starter styles for ExpandableArrayList.
+   Everything here is yours to tweak or delete — the markup emits no CSS of
+   its own. State ("open" vs "closed") is read from aria-expanded="true" on
+   the buttons, so you never need a class toggle.
+
+   Because the list is injected via AJAX, load this on the host page (e.g.
+   Requirements::css('app/client/css/expandable-array-list.css')) — a normal
+   stylesheet applies to injected DOM automatically.
+   ========================================================================= */
+
+/* --- lists: undo the browser's default dl/dd indentation so YOU control it - */
+.eal-list            { margin: 0; padding: 0; }
+.eal-list--seq       { list-style: none; }
+.eal-list--map > .eal-row > dt,
+.eal-list--map > .eal-row > dd { margin: 0; line-height: 2; }
+
+/* one key/value pair side by side; drop this block for a stacked layout */
+.eal-list--map > .eal-row {
+    display: grid;
+    grid-template-columns: minmax(6rem, max-content) 1fr;
+    gap: .15rem .75rem;
+}
+.eal-key   { font-weight: 600; }
+.eal-value { min-width: 0; word-break: break-word; }
+
+/* --- NESTING: indent each nested block (button + its contents) ----------- */
+.eal-nested {
+    margin-left: 1rem;
+    padding-left: .75rem;
+    border-left: 2px solid #e5e7eb;          /* the "tree" guide line */
+}
+
+/* --- BUTTONS: shared base ------------------------------------------------ */
+.eal-toggle,
+.eal-disclosure {
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+    margin: .25rem 0;
+    padding: .15rem .5rem;
+    font: inherit;
+    color: #374151;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: .375rem;
+    cursor: pointer;
+}
+.eal-toggle:hover,
+.eal-disclosure:hover { background: #f3f4f6; }
+
+/* chevron: points right when closed, down when open */
+.eal-toggle-icon,
+.eal-disclosure-icon {
+    width: .45rem;
+    height: .45rem;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: rotate(-45deg);               /* ► closed */
+    transition: transform .15s ease;
+}
+
+/* ======================================================================== */
+/*  THE KEY BIT: open state looks different from closed state               */
+/* ======================================================================== */
+.eal-toggle[aria-expanded="true"] .eal-toggle-icon,
+.eal-disclosure[aria-expanded="true"] .eal-disclosure-icon {
+    transform: rotate(45deg);                /* ▼ open */
+}
+
+/* an open nested disclosure reads as a "live" heading… */
+.eal-disclosure[aria-expanded="true"] {
+    color: #1f2937;
+    font-weight: 600;
+    border-color: #e5e7eb;
+    background: #f9fafb;
+}
+/* …and a closed one is quieter */
+.eal-disclosure[aria-expanded="false"] {
+    color: #6b7280;
+}
+
+/* open overflow toggle ("Show less") flips to a subtle filled look */
+.eal-toggle[aria-expanded="true"] {
+    background: #eef2ff;
+    border-color: #c7d2fe;
+    color: #3730a3;
+}

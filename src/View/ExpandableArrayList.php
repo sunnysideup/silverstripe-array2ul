@@ -21,29 +21,61 @@ use SilverStripe\View\ViewableData;
 
 /**
  * Renders a PHP array (associative, indexed, or nested) as an expandable
- * HTML list. Detects PHP scalar types AND SilverStripe DBField objects
- * and formats each appropriately:
+ * HTML list. Detects PHP scalar types AND SilverStripe DBField objects and
+ * tags each value with a CSS class so you can style it yourself.
  *
- *   - int / float / DBInt / DBFloat / DBDecimal / DBCurrency / DBPercentage
- *       → right-aligned, tabular monospace
- *   - bool / DBBoolean             → TRUE / FALSE
- *   - null                         → NULL
- *   - DateTimeInterface / DBDate / DBDatetime / DBTime
- *                                  → formatted date/time
- *   - HTML string / DBHTMLText / DBHTMLVarchar
- *                                  → raw HTML source in <pre><code>
- *   - long strings (> 200 chars)   → truncated with "click to expand"
- *   - everything else              → plain text, HTML-escaped
+ * This class emits NO styling of its own. Every element carries a class
+ * (see the reference below) for you to target in your own stylesheet.
+ *
+ * Two independent collapse mechanisms, both driven by the HTML `hidden`
+ * attribute (hidden by the browser's own user-agent stylesheet, so no author
+ * CSS is required) and small inline `onclick` handlers (which keep working
+ * when the markup is injected via AJAX / innerHTML):
+ *
+ *   1. ROW OVERFLOW — a list longer than `collapseAfter` (default 25) shows
+ *      the first N rows and a "Show X more" button (.eal-toggle).
+ *   2. NESTING — nested lists collapse behind a disclosure button
+ *      (.eal-disclosure) once they reach `collapseFromDepth` (default 2), so
+ *      the top level and the first nested level start open and deeper levels
+ *      start collapsed. Set collapseFromDepth to 1 to collapse all nesting, or
+ *      higher to open more levels by default.
+ *
+ * Class reference (all you need to style by hand):
+ *   .eal                  root wrapper (root instance only)
+ *   .eal-section          wrapper around a single list + its controls
+ *   .eal-section.eal-nested    a nested (collapsible) list section
+ *   .eal-disclosure       button that expands a nested list
+ *   .eal-disclosure[aria-expanded="true"]   ← style the open state from this
+ *   .eal-disclosure-icon  decorative chevron inside the disclosure button
+ *   .eal-disclosure-label the summary text (e.g. "{…} 5 keys")
+ *   .eal-list             the <dl> (assoc) or <ul> (sequential)
+ *   .eal-list--map        modifier on the <dl> for associative lists
+ *   .eal-list--seq        modifier on the <ul> for sequential lists
+ *   .eal-row              one item; carries .eal-type-{type} too (a <div>
+ *                         grouping dt/dd in a dl, or an <li> in a ul)
+ *   .eal-collapsible      rows beyond the overflow threshold
+ *   .eal-key              the key (<dt>, associative lists only)
+ *   .eal-value            the value wrapper (<dd>, or a <div> inside the <li>)
+ *   .eal-type-{type}      on .eal-row; num|bool|date|html|string|null|obj|array|other
+ *   .eal-num .eal-bool .eal-bool-true .eal-bool-false .eal-null .eal-date .eal-obj
+ *   .eal-html             the <pre> wrapping raw HTML source
+ *   .eal-trunc            a click-to-expand truncated string
+ *   .eal-trunc-ellipsis   the trailing ellipsis on a truncated string
+ *   .eal-empty            an empty-string value ("")
+ *   .eal-empty-list       shown in place of an empty list
+ *   .eal-toggle           the "Show more / less" overflow button
+ *   .eal-toggle[aria-expanded="true"]   ← style the open state from this
+ *   .eal-toggle-icon      decorative chevron inside the toggle button
+ *   .eal-toggle-label     the text span inside the toggle button
  *
  * Template:  templates/Sunnysideup/ArrayToUl/View/ExpandableArrayList.ss
  */
 class ExpandableArrayList extends ViewableData
 {
     private static $casting = [
-        'EmptyLabel'   => 'Varchar',
-        'Styles'       => 'HTMLFragment',
-        'ToggleScript' => 'Varchar',
-        'HiddenCount'  => 'Int',
+        'EmptyLabel'    => 'Varchar',
+        'SummaryLabel'  => 'Varchar',
+        'HiddenCount'   => 'Int',
     ];
 
     private array $data;
@@ -51,26 +83,27 @@ class ExpandableArrayList extends ViewableData
     private bool $startExpanded;
     private string $emptyLabel;
     private int $textTruncateAt;
-    private string $instanceId;
-    private bool $isRoot;
+    private int $collapseFromDepth;
+    private int $depth;
     private bool $allowHtmlAsIs = false;
 
     public function __construct(
         array $data = [],
-        int $collapseAfter = 5,
+        int $collapseAfter = 25,
         bool $startExpanded = false,
         string $emptyLabel = '(empty)',
-        ?string $parentInstanceId = null,
-        int $textTruncateAt = 200
+        int $textTruncateAt = 200,
+        int $collapseFromDepth = 2,
+        int $depth = 0
     ) {
         parent::__construct();
-        $this->data           = $data;
-        $this->collapseAfter  = max(0, $collapseAfter);
-        $this->startExpanded  = $startExpanded;
-        $this->emptyLabel     = $emptyLabel;
-        $this->textTruncateAt = max(0, $textTruncateAt);
-        $this->isRoot         = $parentInstanceId === null;
-        $this->instanceId     = $parentInstanceId ?? ('eal-' . bin2hex(random_bytes(4)));
+        $this->data              = $data;
+        $this->collapseAfter     = max(0, $collapseAfter);
+        $this->startExpanded     = $startExpanded;
+        $this->emptyLabel        = $emptyLabel;
+        $this->textTruncateAt    = max(0, $textTruncateAt);
+        $this->collapseFromDepth = max(0, $collapseFromDepth);
+        $this->depth             = max(0, $depth);
     }
 
     public function setData(array $data): self
@@ -82,6 +115,17 @@ class ExpandableArrayList extends ViewableData
     public function setCollapseAfter(int $n): self
     {
         $this->collapseAfter = max(0, $n);
+        return $this;
+    }
+
+    /**
+     * Nesting depth at which lists start collapsed. 0 collapses the root too,
+     * 1 collapses every nested list, 2 (default) keeps the top level and the
+     * first nested level open and collapses from the second level down.
+     */
+    public function setCollapseFromDepth(int $n): self
+    {
+        $this->collapseFromDepth = max(0, $n);
         return $this;
     }
 
@@ -110,7 +154,6 @@ class ExpandableArrayList extends ViewableData
     public function setAllowHtmlAsIs(bool $allow): self
     {
         $this->allowHtmlAsIs = $allow;
-        // No-op since we auto-detect HTML in strings. Method provided for API symmetry.
         return $this;
     }
 
@@ -128,37 +171,65 @@ class ExpandableArrayList extends ViewableData
     // Template accessors
     // ---------------------------------------------------------------------
 
-    public function getInstanceId(): string
-    {
-        return $this->instanceId;
-    }
     public function getIsRoot(): bool
     {
-        return $this->isRoot;
+        return $this->depth === 0;
     }
+
+    public function getIsNested(): bool
+    {
+        return $this->depth > 0;
+    }
+
+    /**
+     * Should this list begin collapsed? True once we reach `collapseFromDepth`,
+     * unless the caller asked for everything to start open.
+     */
+    public function getStartCollapsed(): bool
+    {
+        return $this->depth >= $this->collapseFromDepth && !$this->startExpanded;
+    }
+
     public function getStartExpanded(): bool
     {
         return $this->startExpanded;
     }
+
     public function getIsEmpty(): bool
     {
         return $this->data === [];
     }
+
     public function getEmptyLabel(): string
     {
         return $this->emptyLabel;
     }
+
     public function getIsAssoc(): bool
     {
         return $this->isAssocInner($this->data);
     }
+
     public function getNeedsCollapse(): bool
     {
         return $this->collapseAfter > 0 && count($this->data) > $this->collapseAfter;
     }
+
     public function getHiddenCount(): int
     {
         return max(0, count($this->data) - $this->collapseAfter);
+    }
+
+    /**
+     * Short summary shown on the disclosure button for a collapsed nested list.
+     */
+    public function getSummaryLabel(): string
+    {
+        $n = count($this->data);
+        if ($this->getIsAssoc()) {
+            return '{…} ' . $n . ' ' . ($n === 1 ? 'key' : 'keys');
+        }
+        return '[…] ' . $n . ' ' . ($n === 1 ? 'item' : 'items');
     }
 
     public function getItems(): ArrayList
@@ -168,12 +239,15 @@ class ExpandableArrayList extends ViewableData
         $i             = 0;
 
         foreach ($this->data as $key => $value) {
-            $hidden = $needsCollapse && $i >= $this->collapseAfter && !$this->startExpanded;
+            $collapsible = $needsCollapse && $i >= $this->collapseAfter;
+            $hidden      = $collapsible && !$this->startExpanded;
+
             $items->push(ArrayData::create([
-                'Key'       => (string)$key,
-                'Value'     => $this->renderValue($value),
-                'IsHidden'  => $hidden,
-                'TypeClass' => $this->typeClass($value),
+                'Key'           => (string)$key,
+                'Value'         => $this->renderValue($value),
+                'IsCollapsible' => $collapsible,
+                'IsHidden'      => $hidden,
+                'TypeClass'     => $this->typeClass($value),
             ]));
             $i++;
         }
@@ -181,75 +255,13 @@ class ExpandableArrayList extends ViewableData
         return $items;
     }
 
-    /**
-     * Inline, scoped CSS. Emitted once by the root instance only.
-     */
-    public function getStyles(): string
-    {
-        if (!$this->isRoot) {
-            return '';
-        }
-
-        $id  = $this->instanceId;
-        $mono = 'ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace';
-        $css = <<<CSS
-.{$id}.eal{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f2937;}
-.{$id} .eal-list{margin:0;padding:0;list-style:none;}
-.{$id} ul.eal-list{padding-left:1rem;}
-.{$id} ul.eal-list>.eal-row{position:relative;padding:.2rem 0 .2rem .65rem;}
-.{$id} ul.eal-list>.eal-row::before{content:"";position:absolute;left:0;top:.7em;width:.3rem;height:.3rem;border-radius:50%;background:#9ca3af;}
-.{$id} dl.eal-list{display:grid;grid-template-columns:max-content 1fr;column-gap:1rem;row-gap:.15rem;}
-.{$id} dl.eal-list>.eal-row{display:contents;}
-.{$id} dl.eal-list>.eal-row>dt{font-weight:600;color:#374151;padding:.2rem 0;align-self:start;}
-.{$id} dl.eal-list>.eal-row>dd{margin:0;padding:.2rem 0;min-width:0;word-break:break-word;}
-.{$id} dl.eal-list>.eal-type-num>dd{text-align:right;font-family:{$mono};font-variant-numeric:tabular-nums;color:#0c4a6e;}
-.{$id} dl.eal-list>.eal-type-date>dd{font-family:{$mono};font-variant-numeric:tabular-nums;color:#5b21b6;}
-.{$id} .eal-list .eal-list,.{$id} .eal-list .eal-section{margin-top:.15rem;}
-.{$id} .eal-hidden{display:none;}
-.{$id} .eal-section.is-expanded>ul.eal-list>.eal-row.eal-hidden{display:list-item;}
-.{$id} .eal-section.is-expanded>dl.eal-list>.eal-row.eal-hidden{display:contents;}
-.{$id} .eal-toggle{display:inline-flex;align-items:center;gap:.4rem;margin-top:.4rem;padding:.3rem .7rem;background:#f3f4f6;border:1px solid #d1d5db;border-radius:.375rem;color:#374151;font:inherit;font-size:.8125rem;cursor:pointer;transition:background .15s,border-color .15s;}
-.{$id} .eal-toggle:hover{background:#e5e7eb;border-color:#9ca3af;}
-.{$id} .eal-toggle:focus-visible{outline:2px solid #2563eb;outline-offset:2px;}
-.{$id} .eal-toggle-icon{display:inline-block;width:.45rem;height:.45rem;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:translateY(-.1rem) rotate(45deg);transition:transform .2s;}
-.{$id} .eal-section.is-expanded .eal-toggle-icon{transform:translateY(.05rem) rotate(-135deg);}
-.{$id} .eal-empty,.{$id} .eal-null{color:#9ca3af;font-style:italic;font-family:{$mono};font-size:.85em;letter-spacing:.05em;}
-.{$id} .eal-bool{font-family:{$mono};font-size:.85em;font-weight:600;letter-spacing:.05em;}
-.{$id} .eal-bool-true{color:#059669;}
-.{$id} .eal-bool-false{color:#dc2626;}
-.{$id} .eal-num{font-family:{$mono};font-variant-numeric:tabular-nums;color:#0c4a6e;}
-.{$id} .eal-date{font-family:{$mono};font-variant-numeric:tabular-nums;color:#5b21b6;}
-.{$id} .eal-obj{color:#7c3aed;font-style:italic;}
-.{$id} pre.eal-html{margin:.1rem 0;padding:.5rem .65rem;background:#f9fafb;border:1px solid #e5e7eb;border-radius:.25rem;font-family:{$mono};font-size:.8125rem;color:#1f2937;white-space:pre-wrap;word-break:break-word;max-height:18em;overflow:auto;}
-.{$id} pre.eal-html>code{font:inherit;color:inherit;background:none;padding:0;}
-.{$id} .eal-trunc{cursor:pointer;border-bottom:1px dotted #9ca3af;}
-.{$id} .eal-trunc:hover{background:#fef3c7;}
-.{$id} .eal-trunc-ellipsis{color:#9ca3af;margin-left:.15rem;font-weight:600;}
-CSS;
-
-        $css = preg_replace('/\s*\n\s*/', '', $css);
-
-        return '<style>' . $css . '</style>';
-    }
-
-    public function getToggleScript(): string
-    {
-        return "var s=this.parentElement,e=s.classList.toggle('is-expanded');"
-             . "this.setAttribute('aria-expanded',e);"
-             . "this.querySelector('.eal-toggle-label').textContent="
-             . "e?'Show less':('Show '+this.dataset.count+' more');";
-    }
-
     // ---------------------------------------------------------------------
     // Value rendering
     // ---------------------------------------------------------------------
 
     /**
-     * Format a single value for the template.
+     * Determine the intrinsic logical type of the value to route it correctly.
      */
-    /**
-       * Determine the intrinsic logical type of the value to route it correctly.
-       */
     private function determineType($value): string
     {
         if (is_array($value)) {
@@ -290,10 +302,7 @@ CSS;
             return 'num';
         }
         if (is_string($value)) {
-            if ($this->looksLikeHtml($value)) {
-                return 'html';
-            }
-            return 'string';
+            return $this->looksLikeHtml($value) ? 'html' : 'string';
         }
         if (is_object($value)) {
             return 'obj';
@@ -303,8 +312,7 @@ CSS;
     }
 
     /**
-     * What CSS class describes the *row* containing this value. Used for
-     * layout-level styling like right-aligning numbers in the dl grid.
+     * CSS class describing the value, e.g. "eal-type-num". Goes on .eal-row.
      */
     private function typeClass($value): string
     {
@@ -324,8 +332,9 @@ CSS;
                 $this->collapseAfter,
                 $this->startExpanded,
                 $this->emptyLabel,
-                $this->instanceId,
-                $this->textTruncateAt
+                $this->textTruncateAt,
+                $this->collapseFromDepth,
+                $this->depth + 1 // one level deeper
             );
             return DBField::create_field('HTMLFragment', (string)$nested->forTemplate());
         }
@@ -379,7 +388,7 @@ CSS;
      */
     private function renderDBField(DBField $field): DBField
     {
-        $raw = $field->getValue();
+        $raw  = $field->getValue();
         $type = $this->determineType($field);
 
         if ($type === 'bool') {
@@ -419,7 +428,6 @@ CSS;
     private function renderHtmlSource(string $html): DBField
     {
         if ($this->allowHtmlAsIs) {
-            // If we're allowed to render HTML as-is, bypass the <pre><code> wrapper and emit raw HTML.
             return DBField::create_field('HTMLFragment', $html);
         }
         return DBField::create_field(
@@ -432,8 +440,8 @@ CSS;
 
     /**
      * Render a long string truncated with a click-to-expand affordance.
-     * The full text is stashed in a data attribute and swapped in via
-     * inline JS (innerText assignment auto-escapes, so XSS-safe).
+     * The full text is stashed in a data attribute and swapped in via the
+     * inline handler (textContent assignment auto-escapes, so XSS-safe).
      */
     private function renderTruncatedText(string $text): DBField
     {
